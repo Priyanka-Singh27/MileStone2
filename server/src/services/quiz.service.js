@@ -1146,6 +1146,17 @@ async function submitQuizAttempt({
   };
 
   if (passed) {
+    // Fundamentals completion is assessment-owned: the client may start a
+    // topic, but only a passing persisted attempt can mark it verified.
+    const fundamentalsTopic = await FundamentalsTopic.findOne({ id: topicId }).lean();
+    if (fundamentalsTopic) {
+      await FundamentalsProgress.findOneAndUpdate(
+        { userId, topicId },
+        { status: 'verified' },
+        { new: true, upsert: true, setDefaultsOnInsert: true }
+      );
+    }
+
     const { topic } = await resolveTopic({
       topicId,
     });
@@ -1191,6 +1202,15 @@ async function submitQuizAttempt({
  * Checks whether a topic has been fully completed by the user.
  */
 async function isTopicFullyCompleted(userId, topicId) {
+  const fundamentalsTopic = await FundamentalsTopic.findOne({ id: topicId }).lean();
+  const fallbackFundamentalsTopic = DEFAULT_CURRICULUM.find(item => item.id === topicId);
+  if (fundamentalsTopic || fallbackFundamentalsTopic) {
+    const topic = fundamentalsTopic || fallbackFundamentalsTopic;
+    if (topic.quizEligible === false) return false;
+    const progress = await FundamentalsProgress.findOne({ userId, topicId }).lean();
+    return Boolean(progress && ['in_progress', 'verified'].includes(progress.status));
+  }
+
   const roadmap = await Roadmap.findOne({
     userId,
   }).lean();

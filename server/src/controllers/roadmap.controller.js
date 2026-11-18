@@ -301,6 +301,12 @@ async function updateTaskStatus(req, res) {
     const userId = (req.user && req.user.userId) || req.body.userId;
     const { status } = req.body;
 
+    // A task can only be completed through the server-validated lesson flow.
+    // This PATCH endpoint remains available for reopening or starting tasks.
+    if (!['not_started', 'in_progress'].includes(status)) {
+      return res.status(403).json({ success: false, error: { code: 'ASSESSMENT_REQUIRED', message: 'Complete the lesson activities and pass its knowledge check to finish this task.' } });
+    }
+
     if (!userId || !status) {
       return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: 'userId and status are required.' } });
     }
@@ -511,13 +517,14 @@ async function getTaskLearning(req, res) {
     };
 
     const isDone = foundTask.status === 'completed' || foundTask.status === 'verified';
+    const savedProgress = foundTask.learningProgress || {};
     const progress = {
       elapsedSeconds: 0,
       timerRunning: false,
-      completedExerciseIds: isDone ? [`ex-${foundTask.id}-1`] : [],
-      knowledgeCheckPassed: isDone,
-      knowledgeCheckScore: isDone ? 100 : 0,
-      knowledgeCheckAnswers: [],
+      completedExerciseIds: savedProgress.completedExerciseIds || [],
+      knowledgeCheckPassed: Boolean(savedProgress.knowledgeCheckPassed),
+      knowledgeCheckScore: savedProgress.knowledgeCheckScore || 0,
+      knowledgeCheckAnswers: savedProgress.knowledgeCheckAnswers || [],
       startedAt: isDone ? new Date().toISOString() : null,
     };
 
@@ -626,12 +633,21 @@ async function updateLearningProgress(req, res) {
     }
 
     if (action === 'complete_exercise') {
+      const validExerciseId = `ex-${foundTask.id}-1`;
+      if (exerciseId && exerciseId !== validExerciseId) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_EXERCISE', message: 'Exercise does not belong to this task.' } });
+      }
+      foundTask.learningProgress = foundTask.learningProgress || {};
+      if (!foundTask.learningProgress.completedExerciseIds.includes(validExerciseId)) {
+        foundTask.learningProgress.completedExerciseIds.push(validExerciseId);
+        await roadmap.save();
+      }
       return res.status(200).json({
         success: true,
         data: {
           task: { id: foundTask.id, status: foundTask.status },
           progress: {
-            completedExerciseIds: [exerciseId || `ex-${foundTask.id}-1`],
+            completedExerciseIds: foundTask.learningProgress.completedExerciseIds,
           },
         },
       });
@@ -658,6 +674,12 @@ async function updateLearningProgress(req, res) {
       const passed = correctCount >= 1;
       const score = Math.round((correctCount / feedback.length) * 100);
 
+      foundTask.learningProgress = foundTask.learningProgress || {};
+      foundTask.learningProgress.knowledgeCheckAnswers = submitted;
+      foundTask.learningProgress.knowledgeCheckScore = score;
+      foundTask.learningProgress.knowledgeCheckPassed = passed;
+      await roadmap.save();
+
       return res.status(200).json({
         success: true,
         data: {
@@ -670,6 +692,18 @@ async function updateLearningProgress(req, res) {
           },
         },
       });
+    }
+
+    if (action === 'complete_lesson') {
+      const learningProgress = foundTask.learningProgress || {};
+      const requiredExerciseIds = [`ex-${foundTask.id}-1`];
+      const completedExerciseIds = learningProgress.completedExerciseIds || [];
+      if (!requiredExerciseIds.every(id => completedExerciseIds.includes(id)) || !learningProgress.knowledgeCheckPassed) {
+        return res.status(400).json({ success: false, error: { code: 'LESSON_REQUIREMENTS_INCOMPLETE', message: 'Complete every activity and pass the knowledge check before finishing this task.' } });
+      }
+      foundTask.status = 'completed';
+      await roadmap.save();
+      return res.status(200).json({ success: true, data: { task: { id: foundTask.id, status: foundTask.status }, progress: learningProgress } });
     }
 
     res.status(200).json({ success: true, data: { task: foundTask } });

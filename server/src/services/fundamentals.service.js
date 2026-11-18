@@ -278,7 +278,7 @@ async function getFundamentalsCurriculum(userId = 'dev-user-1') {
  * @param {Object} params - { userId, topicId, status }
  */
 async function updateFundamentalsProgress({ userId = 'dev-user-1', topicId, status }) {
-  const allowedStatuses = ['not_started', 'in_progress', 'completed', 'verified'];
+  const allowedStatuses = ['not_started', 'in_progress'];
   if (!allowedStatuses.includes(status)) {
     throw {
       statusCode: 400,

@@ -2,6 +2,13 @@
 
 const mongoose = require('mongoose');
 
+const learningProgressSchema = new mongoose.Schema({
+  completedExerciseIds: { type: [String], default: [] },
+  knowledgeCheckPassed: { type: Boolean, default: false },
+  knowledgeCheckScore: { type: Number, default: 0 },
+  knowledgeCheckAnswers: { type: [mongoose.Schema.Types.Mixed], default: [] },
+}, { _id: false });
+
 const roadmapTaskSchema = new mongoose.Schema({
   id: { type: String, required: true },
   topicId: { type: String, required: true },
@@ -14,6 +21,7 @@ const roadmapTaskSchema = new mongoose.Schema({
     enum: ['not_started', 'in_progress', 'completed', 'verified'],
     default: 'not_started',
   },
+  learningProgress: { type: learningProgressSchema, default: () => ({}) },
 }, { _id: false });
 
 const practicePlanSchema = new mongoose.Schema({
