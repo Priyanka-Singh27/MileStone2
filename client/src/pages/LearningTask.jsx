@@ -127,7 +127,7 @@ export default function LearningTask() {
   async function finishLesson() {
     setBusy(true);
     try {
-      await roadmapApi.updateTask(taskId, { userId, status: "completed", dayNumber });
+      await roadmapApi.updateLearningProgress(taskId, { action: "complete_lesson", dayNumber });
       setCompleted(true);
       setLesson((current) => current && ({
         ...current,
@@ -207,13 +207,13 @@ export default function LearningTask() {
             {result && <p className="learning-feedback">{result.correct ? "Correct. " : "Review: "}{result.explanation}</p>}
           </fieldset>;
         })}
-        {!completed && !quizPassed && <button className="btn btn-gold" disabled={busy} onClick={submitCheck}>{busy ? "Checking…" : "Check answers"}</button>}
+        {!completed && <button className="btn btn-gold" disabled={busy || quizPassed} onClick={submitCheck}>{busy ? "Checking…" : "Check answers"}</button>}
         {quizPassed && <p className="learning-passed" role="status"><Check size={15} /> Passed · {lesson.progress.knowledgeCheckScore}%</p>}
       </Frame>
 
       <Frame className="card learning-finish">
         <div><span className="kicker">LESSON PROGRESS</span><h2>{completed ? "Lesson completed" : "Ready to finish?"}</h2><p>{allExercisesDone ? "Practice activities complete" : `${doneExerciseIds.length} of ${requiredExerciseIds.length} activities complete`} · {quizPassed ? "Knowledge check passed" : "Click Complete to finish this lesson"}</p></div>
-        {completed ? <Link className="btn btn-cream" to="/roadmap">Return to roadmap <ArrowRight size={14} /></Link> : <button className="btn btn-gold" disabled={busy} onClick={finishLesson}><Check size={15} /> Complete task</button>}
+        {completed ? <Link className="btn btn-cream" to="/roadmap">Return to roadmap <ArrowRight size={14} /></Link> : <button className="btn btn-gold" disabled={busy || !allExercisesDone || !quizPassed} onClick={finishLesson}><Check size={15} /> Complete task</button>}
       </Frame>
     </div>
   );

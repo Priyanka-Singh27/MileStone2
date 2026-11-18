@@ -26,11 +26,11 @@ export default function TaskRow({ day, task, topicName, busy = false, onLearn, o
         <button
           type="button"
           className={`task-check ${done ? "task-check-done" : ""}`}
-          disabled={verified || busy || !onToggle}
+          disabled={verified || busy || !onToggle || !done}
           onClick={handleCheck}
-          title={verified ? "Verified by quiz" : done ? "Mark as not done" : "Mark as done"}
+          title={verified ? "Verified by quiz" : done ? "Mark as not done" : "Complete the lesson to mark this task done"}
           aria-label={done ? "Completed" : inProgress ? "In progress" : "Not started"}
-          style={{ cursor: onToggle && !verified ? "pointer" : "default" }}
+          style={{ cursor: onToggle && !verified && done ? "pointer" : "default" }}
         >
           {done ? <Check size={14} strokeWidth={3} aria-hidden="true" /> : null}
         </button>

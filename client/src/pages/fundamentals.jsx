@@ -10,22 +10,22 @@ import { TASK_STATUS } from "../config/constants";
 import { CardSkeleton, ErrorBanner, Frame, PageHead, VerifiedBadge } from "../components/ui";
 import { quizAvailability } from "../components/roadmap/Panels";
 
-const SETTABLE = ["not_started", "in_progress", "completed"];
-const isDoneStatus = (s) => s === "completed" || s === "verified";
+const SETTABLE = ["not_started", "in_progress"];
+const isDoneStatus = (s) => s === "verified";
 
 export default function Fundamentals() {
   const toast = useToast();
   const { data, error, loading, retry, setData } = useApi(() => fundamentalsApi.get(), []);
   const areas = data?.areas || [];
 
-  // Quiz status for every completed (not yet verified) topic.
+  // Quiz status for topics the user has started but not yet verified.
   const doneIds = useMemo(
-    () => areas.flatMap((a) => a.topics.filter((t, i) => a.progress?.[i]?.status === "completed" && t.quizEligible !== false).map((t) => t.id)),
+      () => areas.flatMap((a) => a.topics.filter((t, i) => a.progress?.[i]?.status === "in_progress" && t.quizEligible !== false).map((t) => t.id)),
     [areas]
   );
   const { statuses, refresh } = useQuizStatuses(doneIds);
 
-  // Completing a topic opens its quiz: fetch the status then.
+  // Starting a topic makes its assessment available.
   useEffect(() => { doneIds.forEach((id) => { if (!statuses[id]) refresh(id); }); /* eslint-disable-next-line */ }, [doneIds.join("|")]);
 
   async function setStatus(ai, ti, topic, status) {
@@ -48,7 +48,7 @@ export default function Fundamentals() {
   return (
     <>
       <PageHead kicker="CS FUNDAMENTALS" title="Fundamentals," em="bite by bite."
-        text={loading ? "Loading your topics…" : `${done} of ${total} topics completed. Finish a topic to unlock its quiz.`} who="finn" />
+        text={loading ? "Loading your topics…" : `${done} of ${total} topics passed and verified. Start a topic to unlock its quiz.`} who="finn" />
       {error && <ErrorBanner message={friendlyError(error)} onRetry={retry} />}
       {loading && !data && <div className="area-grid"><CardSkeleton lines={5} /><CardSkeleton lines={5} /></div>}
 
@@ -78,7 +78,7 @@ export default function Fundamentals() {
                           {SETTABLE.map((s) => <option key={s} value={s}>{TASK_STATUS[s]}</option>)}
                         </select>
                       )}
-                      {status === "completed" && t.quizEligible !== false && (
+                      {status === "in_progress" && t.quizEligible !== false && (
                         avail.kind === "passed" ? <span className="pill pill-gold"><Check size={12} aria-hidden="true" /> Passed</span>
                         : avail.kind === "ready" ? (
                           <Link to={`/quiz/${encodeURIComponent(t.id)}`} className="btn btn-gold btn-sm">
