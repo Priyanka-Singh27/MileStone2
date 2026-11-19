@@ -15,6 +15,7 @@ const integrationService = require('./integration.service');
 const COOLDOWN_HOURS = 10;
 const PASSING_SCORE = 80;
 const MAX_ATTEMPTS = 3;
+const QUIZ_GROQ_MODEL = process.env.QUIZ_GROQ_MODEL || 'openai/gpt-oss-20b';
 
 /**
  * Resolves role context for a user or topic.
@@ -614,221 +615,38 @@ function parseQuizResponse(rawResponse) {
 }
 
 /**
- * Checks whether generated questions and answers are supported by
- * the topic outline. This screening step is not a guarantee of accuracy.
- */
-async function verifyQuizGrounding({ topic, questions }) {
-  const provider = (
-    process.env.LLM_PROVIDER || 'mock'
-  ).toLowerCase();
-
-  if (provider === 'mock') {
-    return {
-      verified: false,
-      skipped: true,
-      issues: [],
-    };
-  }
-
-  const outline = Array.isArray(topic.outline)
-    ? topic.outline
-    : [];
-
-  if (outline.length === 0) {
-    throw new Error(
-      'Cannot verify quiz grounding because the topic outline is empty.'
-    );
-  }
-
-  const outlineText = outline
-    .map((point, index) => `${index + 1}. ${point.point}`)
-    .join('\n');
-
-  const questionsForReview = questions.map((question) => ({
-    id: question.id,
-    question: question.question,
-    options: question.options,
-    correctOptionIndex: question.correctOptionIndex,
-    explanation: question.explanation,
-  }));
-
-  const system = `
-You are a strict technical quiz reviewer.
-Check every question against the supplied topic outline.
-Determine whether:
-1. The question is answerable using the outline.
-2. The correctOptionIndex points to an option supported by the outline.
-3. The explanation agrees with the outline and selected correct answer.
-4. The question does not require unrelated knowledge absent from the outline.
-Do not assume a question is supported merely because it mentions a keyword
-from the outline. Flag unsupported claims, ambiguous questions, incorrect
-answer keys, and explanations that are not supported.
-Return only valid JSON in this exact shape:
-{
-  "supported": true,
-  "issues": [
-    {
-      "questionId": "q1",
-      "reason": "Brief description of the unsupported or incorrect content."
-    }
-  ]
-}
-If all questions pass, return supported=true and an empty issues array.
-If any question fails, return supported=false and list each failed question.
-`;
-
-  const prompt = `
-TOPIC:
-${topic.name || topic.id || 'Unnamed topic'}
-TOPIC OUTLINE:
-${outlineText}
-QUESTIONS TO REVIEW:
-${JSON.stringify(questionsForReview)}
-Review every question and return only the required JSON object.
-`;
-
-  const rawResponse = await llmService.callLLM({
-    system,
-    prompt,
-    mockKind: 'generic',
-    temperature: 0.1,
-  });
-
-  const result = parseQuizResponse(rawResponse);
-
-  if (
-    !result ||
-    typeof result.supported !== 'boolean' ||
-    !Array.isArray(result.issues)
-  ) {
-    throw new Error(
-      'Grounding verifier returned an invalid response structure.'
-    );
-  }
-
-  for (const issue of result.issues) {
-    if (
-      !issue ||
-      typeof issue.questionId !== 'string' ||
-      typeof issue.reason !== 'string'
-    ) {
-      throw new Error(
-        'Grounding verifier returned an invalid issue entry.'
-      );
-    }
-  }
-
-  if (result.supported && result.issues.length > 0) {
-    throw new Error(
-      'Grounding verifier returned conflicting results.'
-    );
-  }
-
-  if (!result.supported && result.issues.length === 0) {
-    throw new Error(
-      'Grounding verifier rejected the quiz without identifying any issues.'
-    );
-  }
-
-  return {
-    verified: result.supported,
-    skipped: false,
-    issues: result.issues,
-  };
-}
-
-/**
- * Generates and validates a quiz.
- * Allows one repair attempt if the first output fails validation.
+ * Generates one bounded response and validates its structure. A provider/model
+ * fallback is attempted by generateOrGetQuiz if this response is unusable.
  */
 async function generateValidatedQuizQuestions({
   system,
   prompt,
-  topic,
   targetQuestionCount,
+  model,
 }) {
-  let previousResponse = '';
-  let previousError = '';
-
-  for (let attempt = 0; attempt < 2; attempt++) {
-    let requestPrompt = prompt;
-
-    if (attempt === 1) {
-      requestPrompt += `
-REPAIR REQUEST:
-Your previous quiz response did not pass validation.
-Problems to correct:
-${previousError}
-Previous response:
-${previousResponse}
-Return a complete corrected quiz JSON object.
-Keep the questions grounded in the supplied topic outline.
-Follow every required schema rule, including exactly four options
-per question, a valid correctOptionIndex, and a non-empty explanation
-for each question. Do not include Markdown or text outside the JSON.
-`;
-    }
-
-    let rawResponse;
-
-    try {
-      rawResponse = await llmService.callLLM({
-        system,
-        prompt: requestPrompt,
-        mockKind: 'quiz',
-        temperature: 0.2,
-      });
-    } catch (error) {
-      throw new Error(
-        `LLM service call failed: ${error.message}`
-      );
-    }
-
-    try {
-      const parsed = parseQuizResponse(rawResponse);
-
-      const validatedQuestions = validateQuizData(
-        parsed,
-        targetQuestionCount
-      );
-
-      const grounding = await verifyQuizGrounding({
-        topic,
-        questions: validatedQuestions,
-      });
-
-      if (!grounding.skipped && !grounding.verified) {
-        const issueSummary = grounding.issues
-          .map(
-            (issue) =>
-              `${issue.questionId}: ${issue.reason}`
-          )
-          .join('\n');
-
-        throw new Error(
-          `Grounding verification failed:\n${issueSummary}`
-        );
-      }
-
-      return validatedQuestions;
-    } catch (error) {
-      previousResponse =
-        typeof rawResponse === 'string'
-          ? rawResponse
-          : JSON.stringify(rawResponse);
-
-      previousError =
-        error.message || 'Unknown validation error';
-
-      if (attempt === 1) {
-        throw new Error(
-          `Generated quiz failed structure validation: ${previousError}`
-        );
-      }
-    }
+  let rawResponse;
+  try {
+    rawResponse = await llmService.callLLM({
+      system,
+      prompt,
+      mockKind: 'quiz',
+      temperature: 0.2,
+      model,
+      // Full quiz JSON needs more than Groq's default completion budget.
+      maxCompletionTokens: 8192,
+      reasoningEffort: 'low',
+      requestTimeoutMs: 25000,
+      maxRetries: 0,
+    });
+  } catch (error) {
+    throw new Error(`LLM service call failed: ${error.message}`);
   }
 
-  throw new Error('Quiz generation failed.');
+  try {
+    return validateQuizData(parseQuizResponse(rawResponse), targetQuestionCount);
+  } catch (error) {
+    throw new Error(`Generated quiz failed structure validation: ${error.message || 'Unknown validation error'}`);
+  }
 }
 
 /**
@@ -906,29 +724,39 @@ async function generateOrGetQuiz({
     questionCount: targetQuestionCount,
   });
 
-  // Generate, validate, and check grounding. One repair attempt maximum.
+  // Try the fast model first. If it fails validation or the provider rejects
+  // it, fall back to the previous model. Each provider request is bounded and
+  // not retried internally so both attempts fit inside the client timeout.
   let validatedQuestions;
 
-  try {
-    validatedQuestions = await generateValidatedQuizQuestions({
-      system,
-      prompt,
-      topic,
-      targetQuestionCount,
-    });
+  const generationModels = [...new Set([QUIZ_GROQ_MODEL, 'openai/gpt-oss-120b'])];
+  let generationError;
+  for (const model of generationModels) {
+    try {
+      validatedQuestions = await generateValidatedQuizQuestions({
+        system,
+        prompt,
+        targetQuestionCount,
+        model,
+      });
+      break;
+    } catch (error) {
+      generationError = error;
+      console.warn(`[quiz] Generation failed with ${model};${generationModels.length > 1 && model !== generationModels[generationModels.length - 1] ? ' trying fallback model.' : ' no fallback remains.'}`);
+    }
+  }
 
-    // Shuffle only after validation and grounding checks.
-    // The correct answer index is remapped automatically.
-    validatedQuestions = validatedQuestions.map(
-      shuffleQuestionOptions
-    );
-  } catch (error) {
+  if (!validatedQuestions) {
     throw {
       statusCode: 502,
       code: 'QUIZ_GENERATION_FAILED',
-      message: error.message || 'Unable to generate a valid quiz.',
+      message: generationError?.message || 'Unable to generate a valid quiz.',
     };
   }
+
+  // Shuffle only after structural validation.
+  // The correct answer index is remapped automatically.
+  validatedQuestions = validatedQuestions.map(shuffleQuestionOptions);
 
   // Save the shuffled quiz. Cached quizzes retain their saved option order.
   const createdQuiz = await Quiz.create({
@@ -1148,7 +976,7 @@ async function submitQuizAttempt({
   if (passed) {
     // Fundamentals completion is assessment-owned: the client may start a
     // topic, but only a passing persisted attempt can mark it verified.
-    const fundamentalsTopic = await FundamentalsTopic.findOne({ id: topicId }).lean();
+    const fundamentalsTopic = await FundamentalsTopic.findOne({ id: topicId }).lean().catch(() => null);
     if (fundamentalsTopic) {
       await FundamentalsProgress.findOneAndUpdate(
         { userId, topicId },
@@ -1202,12 +1030,12 @@ async function submitQuizAttempt({
  * Checks whether a topic has been fully completed by the user.
  */
 async function isTopicFullyCompleted(userId, topicId) {
-  const fundamentalsTopic = await FundamentalsTopic.findOne({ id: topicId }).lean();
+  const fundamentalsTopic = await FundamentalsTopic.findOne({ id: topicId }).lean().catch(() => null);
   const fallbackFundamentalsTopic = DEFAULT_CURRICULUM.find(item => item.id === topicId);
   if (fundamentalsTopic || fallbackFundamentalsTopic) {
     const topic = fundamentalsTopic || fallbackFundamentalsTopic;
     if (topic.quizEligible === false) return false;
-    const progress = await FundamentalsProgress.findOne({ userId, topicId }).lean();
+    const progress = await FundamentalsProgress.findOne({ userId, topicId }).lean().catch(() => null);
     return Boolean(progress && ['in_progress', 'verified'].includes(progress.status));
   }
 

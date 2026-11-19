@@ -23,6 +23,11 @@ async function callLLM({
   prompt,
   mockKind = 'generic',
   temperature,
+  model,
+  maxCompletionTokens,
+  reasoningEffort,
+  requestTimeoutMs,
+  maxRetries,
 }) {
   switch (PROVIDER) {
     case 'anthropic':
@@ -36,6 +41,11 @@ async function callLLM({
         system,
         prompt,
         temperature,
+        model,
+        maxCompletionTokens,
+        reasoningEffort,
+        requestTimeoutMs,
+        maxRetries,
       });
 
     case 'mock':
@@ -89,7 +99,7 @@ async function callAnthropic({ system, prompt }) {
  * Groq implementation.
  * Requires the groq-sdk package and LLM_API_KEY in the environment.
  */
-async function callGroq({ system, prompt, temperature }) {
+async function callGroq({ system, prompt, temperature, model, maxCompletionTokens, reasoningEffort, requestTimeoutMs, maxRetries }) {
   const Groq = require('groq-sdk');
 
   const client = new Groq({
@@ -97,7 +107,7 @@ async function callGroq({ system, prompt, temperature }) {
   });
 
   const request = {
-    model: 'openai/gpt-oss-120b',
+    model: model || process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
 
     messages: [
       {
@@ -115,12 +125,20 @@ async function callGroq({ system, prompt, temperature }) {
     },
   };
 
+  if (Number.isInteger(maxCompletionTokens) && maxCompletionTokens > 0) {
+    request.max_completion_tokens = maxCompletionTokens;
+  }
+  if (reasoningEffort) request.reasoning_effort = reasoningEffort;
+
   // Only include temperature when the caller explicitly provides it.
   if (typeof temperature === 'number') {
     request.temperature = temperature;
   }
 
-  const response = await client.chat.completions.create(request);
+  const requestOptions = {};
+  if (Number.isInteger(requestTimeoutMs) && requestTimeoutMs > 0) requestOptions.timeout = requestTimeoutMs;
+  if (Number.isInteger(maxRetries) && maxRetries >= 0) requestOptions.maxRetries = maxRetries;
+  const response = await client.chat.completions.create(request, requestOptions);
 
   return response.choices[0].message.content;
 }
